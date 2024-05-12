@@ -14,8 +14,10 @@ The ABSP database can process results in CSV format containing
 
 # Build
 
+```bash
 make
 make install
+```
 
 # Usage
 
