@@ -19,6 +19,7 @@ var (
 
 var Rx = regexp.MustCompile(`^([A-Za-z,_\-{}'\(\) ]+)(\d+) ([0-9 ]+); ([0-9 \-]+);.*board ([0-9 ]+);.*p12 ([0-9 ]+);`)
 
+// player, oppenent_id
 type Match struct {
 	Name  string
 	Opp   string
@@ -28,10 +29,24 @@ type Match struct {
 	Round int
 }
 
-type MatchMap map[string]Match
+type Matches map[string]Match
+
+func parseFirstLastName(name string) string {
+	res := strings.Split(name, ",")
+	switch len(res) {
+	case 1:
+		return name
+	case 2:
+		name = strings.TrimLeft(res[1]+" "+res[0], " ")
+		return name
+	default:
+		return ""
+	}
+
+}
 
 // parseResults turns tsh results row into match data
-func parseResults(id int, s string, mm MatchMap) MatchMap {
+func parseResults(id int, s string, mm Matches) Matches {
 	res := Rx.FindStringSubmatch(s)
 
 	// Null rows should be ignored
@@ -47,6 +62,8 @@ func parseResults(id int, s string, mm MatchMap) MatchMap {
 
 	// Parse values into map structure
 	name := strings.TrimRight(res[1], " ")
+	// If name contains a comma "Mackay(GM), Lewis" then reverse it
+	name = parseFirstLastName(name)
 
 	oppos := strings.Fields(res[3])
 	scores := strings.Fields(res[4])
@@ -106,7 +123,7 @@ type Result struct {
 }
 
 // countMaxRoundsPlayers parses the match map and returns the max round and player
-func countMaxRoundsPlayers(mm MatchMap) (int, int) {
+func countMaxRoundsPlayers(mm Matches) (int, int) {
 	var nr, np int
 
 	// Round/player count from 1, not zero
@@ -140,11 +157,12 @@ func countMaxRoundsPlayers(mm MatchMap) (int, int) {
 
 // createKey returns a stringified key from round and player ids
 func createKey(r int, p int) string {
+	// round-player
 	return fmt.Sprintf("%d-%d", r, p)
 }
 
 // fetchMatch looks up a match by key
-func fetchMatch(key string, mm MatchMap) (Match, error) {
+func fetchMatch(key string, mm Matches) (Match, error) {
 	m, ok := mm[key]
 	if !ok {
 		return Match{}, ErrMatchNotFound
@@ -189,7 +207,7 @@ func formatResult(m1 Match, m2 Match, div string) Result {
 }
 
 // processMatches validates the pairings in each round and returns a slice of csv results
-func processMatches(mm MatchMap, div string) []Result {
+func processMatches(mm Matches, div string) []Result {
 	// parse number of rounds and players from the match map
 	nr, np := countMaxRoundsPlayers(mm)
 
@@ -199,9 +217,11 @@ func processMatches(mm MatchMap, div string) []Result {
 
 	// iterate over rounds / players - count from 1 not zero
 	for r := 1; r < nr+1; r++ {
+		var byes_count int
+		var match_count int
+		// iterate over all players
 		for p := 1; p < np+1; p++ {
-
-			// Lookup player1 match data
+			// Lookup match data for player1
 			key1 := createKey(r, p)
 
 			// skip if we've seen them before
@@ -211,7 +231,7 @@ func processMatches(mm MatchMap, div string) []Result {
 
 			m1, err := fetchMatch(key1, mm)
 			if err != nil {
-				log.Fatal(err)
+				log.Fatalf("failed to match %s, %v", key1, err)
 			}
 
 			seen[key1] = true
@@ -220,6 +240,7 @@ func processMatches(mm MatchMap, div string) []Result {
 			opp, _ := strconv.Atoi(m1.Opp)
 			if opp == 0 {
 				// this represents a bye
+				byes_count++
 				continue
 			}
 			key2 := createKey(r, opp)
@@ -233,6 +254,9 @@ func processMatches(mm MatchMap, div string) []Result {
 			if err != nil {
 				log.Fatal(err)
 			}
+
+			// increment match counter for this round
+			match_count++
 
 			seen[key2] = true
 
@@ -250,6 +274,11 @@ func processMatches(mm MatchMap, div string) []Result {
 			result := formatResult(m1, m2, div)
 			results = append(results, result)
 		}
+
+		// matches found plus byes (divided by two since we match each player separately) should equal half the number of players
+		if 2*match_count+byes_count-np != 0 {
+			fmt.Printf("Round %d, found %d matches and %d byes but expected %d\n", r, match_count, byes_count/2, np/2)
+		}
 	}
 	return results
 }
@@ -264,16 +293,16 @@ func printCSV(results []Result) {
 // process reads the data and passes it to processMatches
 func process(file string) {
 	// Create a map to store the match data for each player
-	matches := make(MatchMap, 100)
+	matches := make(Matches, 100)
 
 	// Read the file as bytes
-	bytes, err := os.ReadFile(file)
+	b, err := os.ReadFile(file)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	// Parse bytes slice to lines of string data
-	lines := strings.Split(string(bytes), "\n")
+	// Parse b slice to lines of string data
+	lines := strings.Split(string(b), "\n")
 	for id, line := range lines {
 		matches = parseResults(id+1, line, matches)
 	}
